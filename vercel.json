@@ -1,3 +1,26 @@
 {
-  "version": 2
+  "version": 2,
+  "functions": {
+    "api/**/*.js": {
+      "runtime": "nodejs20.x",
+      "memory": 1024,
+      "maxDuration": 60
+    }
+  },
+  "rewrites": [
+    { "source": "/", "destination": "/api" },
+    {
+      "source": "/movie/:tmdbId",
+      "destination": "/api/movie/:tmdbId"
+    },
+    {
+      "source": "/tv/:tmdbId/season/:season/episode/:episode",
+      "destination": "/api/tv/:tmdbId/season/:season/episode/:episode"
+    },
+    {
+      "source": "/subtitles/opensubtitles",
+      "destination": "/api/subtitles/opensubtitles"
+    },
+    { "source": "/healthz", "destination": "/api/healthz" }
+  ]
 }
