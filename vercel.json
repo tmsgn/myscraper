@@ -1,26 +1,14 @@
 {
   "version": 2,
   "functions": {
-    "api/**/*.js": {
-      "runtime": "@vercel/node@20.0.0",
-      "memory": 1024,
+    "api/*.js": {
+      "runtime": "nodejs20.x",
+      "memory": 3008,
       "maxDuration": 60
     }
   },
   "rewrites": [
-    { "source": "/", "destination": "/api" },
-    {
-      "source": "/movie/:tmdbId",
-      "destination": "/api/movie/:tmdbId"
-    },
-    {
-      "source": "/tv/:tmdbId/season/:season/episode/:episode",
-      "destination": "/api/tv/:tmdbId/season/:season/episode/:episode"
-    },
-    {
-      "source": "/subtitles/opensubtitles",
-      "destination": "/api/subtitles/opensubtitles"
-    },
-    { "source": "/healthz", "destination": "/api/healthz" }
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/api/$1" }
   ]
 }
