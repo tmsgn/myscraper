@@ -116,12 +116,35 @@ async function mediaFromTv(id, season, episode) {
   const e = s.episodes?.find((x) => x.episode_number === episodeNumber);
   if (!e) throw new Error(`Episode ${episode} not found in season ${season}`);
 
+  // Fetch TMDB external IDs to get reliable IMDb IDs for the show/episode
+  let showExternalIds = null;
+  let episodeExternalIds = null;
+  try {
+    showExternalIds = await tmdbGet(`/tv/${id}/external_ids`);
+  } catch (err) {
+    console.warn("Failed to fetch show external_ids", err?.message || err);
+  }
+  try {
+    episodeExternalIds = await tmdbGet(
+      `/tv/${id}/season/${seasonNumber}/episode/${episodeNumber}/external_ids`
+    );
+  } catch (err) {
+    console.warn("Failed to fetch episode external_ids", err?.message || err);
+  }
+
+  const imdbId =
+    (episodeExternalIds && episodeExternalIds.imdb_id) ||
+    (showExternalIds && showExternalIds.imdb_id) ||
+    e.imdb_id ||
+    tv.imdb_id ||
+    undefined;
+
   return {
     type: "show",
     title,
     releaseYear,
     tmdbId: String(id),
-    imdbId: e.imdb_id || tv.imdb_id || undefined, // sometimes episodes may have imdb id in other sources
+    imdbId, // prefer episode IMDb ID, then show IMDb ID
     season: { number: seasonNumber, tmdbId: String(s.id), title: s.name || "" },
     episode: {
       number: episodeNumber,
