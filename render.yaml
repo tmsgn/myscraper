@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: standalone-api
+    runtime: node
+    plan: free
+    region: oregon
+    buildCommand: pnpm install --frozen-lockfile
+    startCommand: pnpm start
+    autoDeploy: true
+    envVars:
+      - key: TMDB_API_KEY
+        sync: false
+      - key: PROXY_URLS
+        sync: false
+    healthCheckPath: /healthz

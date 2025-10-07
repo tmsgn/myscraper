@@ -1,0 +1,22 @@
+{
+  "name": "standalone-api",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "@p-stream/providers": "github:p-stream/providers#production",
+    "node-fetch": "^3.3.2"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "packageManager": "pnpm@9.12.0"
+}
