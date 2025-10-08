@@ -52,6 +52,9 @@ function makeFetch() {
   };
 }
 
+// Always exclude these source IDs for safety/performance
+const ALWAYS_EXCLUDED_SOURCE_IDS = new Set(["fsharetv"]);
+
 const providers = makeProviders({
   fetcher: makeFetch(),
   target: targets.NATIVE,
@@ -288,38 +291,98 @@ function injectCaptionsForHost(obj, host, captions) {
   }
 }
 
+// Inject captions directly into a single stream object if it has an HLS playlist
+function injectCaptionsIntoStream(stream, captions) {
+  if (!stream || typeof stream !== "object") return;
+  const playlist = findFirstPlaylist(stream);
+  if (!playlist) return;
+  const host = playlistHost(playlist);
+  if (!host) return;
+  const existing = Array.isArray(stream.captions) ? stream.captions : [];
+  const existingIds = new Set(existing.map((c) => c.id));
+  const newOnes = (captions || []).filter((c) => !existingIds.has(c.id));
+  stream.captions = [...existing, ...newOnes];
+}
+
+// Cache provider metadata to avoid re-listing on each request
+let SOURCE_METAS_CACHE = null;
+let EMBED_METAS_CACHE = null;
+async function getProviderMetas() {
+  if (!SOURCE_METAS_CACHE || !EMBED_METAS_CACHE) {
+    SOURCE_METAS_CACHE = await providers.listSources();
+    EMBED_METAS_CACHE = await providers.listEmbeds();
+  }
+  return { sourceMetas: SOURCE_METAS_CACHE, embedMetas: EMBED_METAS_CACHE };
+}
+
+// Find the first successful stream from non-excluded sources/embeds
+async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
+  const { sourceMetas, embedMetas } = await getProviderMetas();
+  const compatibleSources = sourceMetas
+    .filter((s) =>
+      (Array.isArray(s.mediaTypes) ? s.mediaTypes : []).includes(media.type)
+    )
+    .filter((s) => !excluded.has(String(s.id).toLowerCase()));
+
+  for (const src of compatibleSources) {
+    try {
+      const out = await providers.runSourceScraper({ id: src.id, media });
+      if (out.stream && out.stream.length > 0) {
+        return { sourceId: src.id, stream: out.stream[0] };
+      }
+      if (out.embeds && out.embeds.length > 0) {
+        const orderedEmbeds = out.embeds
+          .map((e, i) => ({ ...e, _i: i }))
+          .sort((a, b) => {
+            const ai = embedMetas.findIndex((m) => m.id === a.embedId);
+            const bi = embedMetas.findIndex((m) => m.id === b.embedId);
+            if (ai >= 0 && bi >= 0) return ai - bi;
+            if (ai >= 0) return -1;
+            if (bi >= 0) return 1;
+            return a._i - b._i;
+          });
+        for (const emb of orderedEmbeds) {
+          try {
+            const eout = await providers.runEmbedScraper({
+              id: emb.embedId,
+              url: emb.url,
+            });
+            if (eout.stream && eout.stream.length > 0) {
+              return {
+                sourceId: src.id,
+                embedId: emb.embedId,
+                stream: eout.stream[0],
+              };
+            }
+          } catch (_) {
+            // continue to next embed
+          }
+        }
+      }
+    } catch (_) {
+      // continue to next source
+    }
+  }
+  return null;
+}
+
 // --- Routes ---
 // provider-backed scraping endpoints for movies/tv
 app.get("/api/movie/:tmdbId", async (req, res) => {
   try {
     const media = await mediaFromMovie(req.params.tmdbId);
-    const result = await providers.runAll({ media });
+    // Return first working provider (excluding always-excluded IDs)
+    const result = await findFirstProvider(media);
     if (!result) return res.status(404).json({ error: "no_output" });
 
-    // find a playlist in result to determine which host to inject captions into
-    const firstPlaylist = findFirstPlaylist(result);
-    if (firstPlaylist && media.imdbId) {
-      const host = playlistHost(firstPlaylist);
-      if (host) {
+    // Inject captions for the single stream result
+    if (media.imdbId) {
+      try {
         const captions = await fetchOpenSubtitlesCaptions(media.imdbId);
         if (captions && captions.length > 0) {
-          injectCaptionsForHost(result, host, captions);
-          console.log(
-            `Injected ${captions.length} captions into result for host ${host}`
-          );
-        } else {
-          console.log("OpenSubtitles returned no captions");
+          injectCaptionsIntoStream(result.stream, captions);
         }
-      } else {
-        console.log("Couldn't determine playlist host to inject captions");
-      }
-    } else {
-      if (!media.imdbId)
-        console.log("No imdbId available - skipping external subtitles");
-      else
-        console.log(
-          "No playlist found in provider result - skipping injection"
-        );
+      } catch (_) {}
     }
 
     res.json(result);
@@ -334,32 +397,16 @@ app.get("/api/movie/:tmdbId", async (req, res) => {
 app.get("/movie/:tmdbId", async (req, res) => {
   try {
     const media = await mediaFromMovie(req.params.tmdbId);
-    const result = await providers.runAll({ media });
+    const result = await findFirstProvider(media);
     if (!result) return res.status(404).json({ error: "no_output" });
 
-    const firstPlaylist = findFirstPlaylist(result);
-    if (firstPlaylist && media.imdbId) {
-      const host = playlistHost(firstPlaylist);
-      if (host) {
+    if (media.imdbId) {
+      try {
         const captions = await fetchOpenSubtitlesCaptions(media.imdbId);
         if (captions && captions.length > 0) {
-          injectCaptionsForHost(result, host, captions);
-          console.log(
-            `Injected ${captions.length} captions into result for host ${host}`
-          );
-        } else {
-          console.log("OpenSubtitles returned no captions");
+          injectCaptionsIntoStream(result.stream, captions);
         }
-      } else {
-        console.log("Couldn't determine playlist host to inject captions");
-      }
-    } else {
-      if (!media.imdbId)
-        console.log("No imdbId available - skipping external subtitles");
-      else
-        console.log(
-          "No playlist found in provider result - skipping injection"
-        );
+      } catch (_) {}
     }
 
     res.json(result);
@@ -374,36 +421,20 @@ app.get("/api/tv/:tmdbId/season/:season/episode/:episode", async (req, res) => {
   try {
     const { tmdbId, season, episode } = req.params;
     const media = await mediaFromTv(tmdbId, season, episode);
-    const result = await providers.runAll({ media });
+    const result = await findFirstProvider(media);
     if (!result) return res.status(404).json({ error: "no_output" });
 
-    const firstPlaylist = findFirstPlaylist(result);
-    if (firstPlaylist && media.imdbId) {
-      const host = playlistHost(firstPlaylist);
-      if (host) {
+    if (media.imdbId) {
+      try {
         const captions = await fetchOpenSubtitlesCaptions(
           media.imdbId,
           media.season?.number,
           media.episode?.number
         );
         if (captions && captions.length > 0) {
-          injectCaptionsForHost(result, host, captions);
-          console.log(
-            `Injected ${captions.length} captions into result for host ${host}`
-          );
-        } else {
-          console.log("OpenSubtitles returned no captions");
+          injectCaptionsIntoStream(result.stream, captions);
         }
-      } else {
-        console.log("Couldn't determine playlist host to inject captions");
-      }
-    } else {
-      if (!media.imdbId)
-        console.log("No imdbId available - skipping external subtitles");
-      else
-        console.log(
-          "No playlist found in provider result - skipping injection"
-        );
+      } catch (_) {}
     }
 
     res.json(result);
@@ -419,36 +450,20 @@ app.get("/tv/:tmdbId/season/:season/episode/:episode", async (req, res) => {
   try {
     const { tmdbId, season, episode } = req.params;
     const media = await mediaFromTv(tmdbId, season, episode);
-    const result = await providers.runAll({ media });
+    const result = await findFirstProvider(media);
     if (!result) return res.status(404).json({ error: "no_output" });
 
-    const firstPlaylist = findFirstPlaylist(result);
-    if (firstPlaylist && media.imdbId) {
-      const host = playlistHost(firstPlaylist);
-      if (host) {
+    if (media.imdbId) {
+      try {
         const captions = await fetchOpenSubtitlesCaptions(
           media.imdbId,
           media.season?.number,
           media.episode?.number
         );
         if (captions && captions.length > 0) {
-          injectCaptionsForHost(result, host, captions);
-          console.log(
-            `Injected ${captions.length} captions into result for host ${host}`
-          );
-        } else {
-          console.log("OpenSubtitles returned no captions");
+          injectCaptionsIntoStream(result.stream, captions);
         }
-      } else {
-        console.log("Couldn't determine playlist host to inject captions");
-      }
-    } else {
-      if (!media.imdbId)
-        console.log("No imdbId available - skipping external subtitles");
-      else
-        console.log(
-          "No playlist found in provider result - skipping injection"
-        );
+      } catch (_) {}
     }
 
     res.json(result);

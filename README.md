@@ -1,15 +1,20 @@
 # Standalone Video API
 
-This folder contains a self-contained API server you can move to your Desktop and run independently. It exposes simple endpoints to fetch video sources and subtitles by TMDB id.
+This folder contains a self-contained API server you can run independently. It exposes simple endpoints to fetch video sources and subtitles by TMDB id.
 
 ## Endpoints
 
 - GET /api/movie/:tmdbId
-  - Returns aggregated playable sources and subtitles for the movie TMDB id.
+  - Returns the first working provider stream (fastest path) for a movie.
 - GET /api/tv/:tmdbId/season/:season/episode/:episode
-  - Returns aggregated playable sources and subtitles for the specific TV episode by TMDB id.
+  - Returns the first working provider stream for a TV episode.
 
-Response format follows the output of `@p-stream/providers` runAll: an object per source/embed with stream URLs and subtitles.
+Response format follows the output of `@p-stream/providers` single-result path: `{ sourceId, stream, embedId? }`.
+
+### Provider exclusions
+
+- The provider `fsharetv` (fshare.co) is excluded by default for stability.
+- No query parameter is required; the server always skips it.
 
 ## Environment
 
@@ -51,4 +56,17 @@ curl "http://localhost:3002/api/tv/1399/season/1/episode/1" | Out-Host
 
 You can deploy this app to any Node.js host that can run an Express server (e.g., Render, Railway, Fly.io, a VPS, or Docker). Ensure the required environment variable `TMDB_API_KEY` is set, and optionally `PROXY_URLS`.
 
-Typical start command: `node server.js` (already wired to `pnpm start`).
+### Render (Blueprint deploy)
+
+This project includes `render.yaml`.
+
+1. Push the project to a GitHub repo.
+2. In Render, click New → Blueprint and select your repo.
+3. Set environment variables on the service:
+
+- `TMDB_API_KEY` (required)
+- `PROXY_URLS` (optional)
+
+4. Click Deploy. Health check path is `/healthz`.
+
+Render uses `pnpm` via `corepack` in `render.yaml`, and runs `pnpm start`.
