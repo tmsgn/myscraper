@@ -36,19 +36,49 @@ function getProxyUrls() {
     .filter(Boolean);
 }
 
+function getDefaultHeaders() {
+  // Some providers block Node's default UA. Use a modern desktop UA and basic accept headers.
+  return {
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "accept-language": "en-US,en;q=0.9",
+  };
+}
+
+function mergeHeaders(existing, extra) {
+  // Merge but do not overwrite explicitly set headers in existing
+  const lowerExisting = new Set(
+    Object.keys(existing || {}).map((k) => k.toLowerCase())
+  );
+  const out = { ...(existing || {}) };
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (!lowerExisting.has(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
 function makeFetch() {
   const proxies = getProxyUrls();
   if (proxies.length === 0)
-    return makeStandardFetcher(async (...args) => (await getFetch())(...args));
+    return makeStandardFetcher(async (input, init = {}) => {
+      const f = await getFetch();
+      const headers = mergeHeaders(init.headers, getDefaultHeaders());
+      return f(input, { ...init, headers });
+    });
   // Simple round-robin proxy fetcher
   let i = Math.floor(Math.random() * proxies.length);
-  return async (input, init) => {
+  return async (input, init = {}) => {
     const base = proxies[i % proxies.length];
     i++;
     const url = typeof input === "string" ? input : input.url;
+    // If proxy expects a join without delimiter, base should include any required separators.
+    // Example: https://r.jina.ai/http:// + http://example.com/page
     const target = `${base}${url}`;
     const f = await getFetch();
-    return f(target, init);
+    const headers = mergeHeaders(init.headers, getDefaultHeaders());
+    return f(target, { ...init, headers });
   };
 }
 
@@ -69,6 +99,25 @@ app.get("/", (req, res) => {
   res.json({ ok: true, service: "standalone-api", uptime: process.uptime() });
 });
 app.get("/healthz", (req, res) => res.status(200).send("ok"));
+
+// List available sources and embeds (for debugging/selection)
+app.get("/providers", async (req, res) => {
+  try {
+    const { sourceMetas, embedMetas } = await getProviderMetas();
+    res.json({
+      sources: sourceMetas.map((s) => ({
+        id: s.id,
+        name: s.name,
+        mediaTypes: s.mediaTypes,
+      })),
+      embeds: embedMetas.map((e) => ({ id: e.id, name: e.name })),
+      alwaysExcluded: Array.from(ALWAYS_EXCLUDED_SOURCE_IDS),
+    });
+  } catch (err) {
+    console.error("providers list error", err);
+    res.status(500).json({ error: "internal" });
+  }
+});
 
 // --- TMDB helpers ---
 async function tmdbGet(path) {
@@ -316,7 +365,7 @@ async function getProviderMetas() {
 }
 
 // Find the first successful stream from non-excluded sources/embeds
-async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
+async function _findFirstProvider(media, excluded, attempts) {
   const { sourceMetas, embedMetas } = await getProviderMetas();
   const compatibleSources = sourceMetas
     .filter((s) =>
@@ -330,9 +379,17 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
       if (out.stream && out.stream.length > 0) {
         const hlsOnly = out.stream.filter((st) => st && st.type === "hls");
         if (hlsOnly.length > 0) {
+          attempts && attempts.push({ kind: "source", id: src.id, ok: true });
           return { sourceId: src.id, stream: hlsOnly[0] };
         }
       }
+      attempts &&
+        attempts.push({
+          kind: "source",
+          id: src.id,
+          ok: false,
+          reason: "no_stream",
+        });
       if (out.embeds && out.embeds.length > 0) {
         const orderedEmbeds = out.embeds
           .map((e, i) => ({ ...e, _i: i }))
@@ -355,6 +412,13 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
                 (st) => st && st.type === "hls"
               );
               if (hlsOnly.length > 0) {
+                attempts &&
+                  attempts.push({
+                    kind: "embed",
+                    id: emb.embedId,
+                    ok: true,
+                    via: src.id,
+                  });
                 return {
                   sourceId: src.id,
                   embedId: emb.embedId,
@@ -362,16 +426,52 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
                 };
               }
             }
+            attempts &&
+              attempts.push({
+                kind: "embed",
+                id: emb.embedId,
+                ok: false,
+                via: src.id,
+                reason: "no_stream",
+              });
           } catch (_) {
+            attempts &&
+              attempts.push({
+                kind: "embed",
+                id: emb.embedId,
+                ok: false,
+                via: src.id,
+                reason: "error",
+              });
             // continue to next embed
           }
         }
       }
     } catch (_) {
+      attempts &&
+        attempts.push({
+          kind: "source",
+          id: src.id,
+          ok: false,
+          reason: "error",
+        });
       // continue to next source
     }
   }
   return null;
+}
+
+async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
+  return _findFirstProvider(media, excluded, null);
+}
+
+async function findFirstProviderDebug(
+  media,
+  excluded = ALWAYS_EXCLUDED_SOURCE_IDS
+) {
+  const attempts = [];
+  const result = await _findFirstProvider(media, excluded, attempts);
+  return { result, attempts };
 }
 
 // --- Routes ---
@@ -379,9 +479,32 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
 app.get("/api/movie/:tmdbId", async (req, res) => {
   try {
     const media = await mediaFromMovie(req.params.tmdbId);
-    // Return first working provider (excluding always-excluded IDs)
-    const result = await findFirstProvider(media);
-    if (!result) return res.status(404).json({ error: "no_output" });
+    // Build excluded set, allow override via query ?include=providerId1,providerId2
+    const include =
+      typeof req.query.include === "string"
+        ? req.query.include.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const exclude =
+      typeof req.query.exclude === "string"
+        ? req.query.exclude.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const excluded = new Set(
+      [...ALWAYS_EXCLUDED_SOURCE_IDS]
+        .filter((id) => !include.includes(id))
+        .concat(exclude)
+    );
+
+    const debug = req.query.debug === "1" || req.query.debug === "true";
+    const result = debug
+      ? (await findFirstProviderDebug(media, excluded)).result
+      : await findFirstProvider(media, excluded);
+    if (!result) {
+      if (debug) {
+        const { attempts } = await findFirstProviderDebug(media, excluded);
+        return res.status(404).json({ error: "no_output", attempts });
+      }
+      return res.status(404).json({ error: "no_output" });
+    }
 
     // Inject captions for the single stream result
     if (media.imdbId) {
@@ -405,8 +528,31 @@ app.get("/api/movie/:tmdbId", async (req, res) => {
 app.get("/movie/:tmdbId", async (req, res) => {
   try {
     const media = await mediaFromMovie(req.params.tmdbId);
-    const result = await findFirstProvider(media);
-    if (!result) return res.status(404).json({ error: "no_output" });
+    const include =
+      typeof req.query.include === "string"
+        ? req.query.include.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const exclude =
+      typeof req.query.exclude === "string"
+        ? req.query.exclude.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const excluded = new Set(
+      [...ALWAYS_EXCLUDED_SOURCE_IDS]
+        .filter((id) => !include.includes(id))
+        .concat(exclude)
+    );
+
+    const debug = req.query.debug === "1" || req.query.debug === "true";
+    const result = debug
+      ? (await findFirstProviderDebug(media, excluded)).result
+      : await findFirstProvider(media, excluded);
+    if (!result) {
+      if (debug) {
+        const { attempts } = await findFirstProviderDebug(media, excluded);
+        return res.status(404).json({ error: "no_output", attempts });
+      }
+      return res.status(404).json({ error: "no_output" });
+    }
 
     if (media.imdbId) {
       try {
@@ -429,8 +575,31 @@ app.get("/api/tv/:tmdbId/season/:season/episode/:episode", async (req, res) => {
   try {
     const { tmdbId, season, episode } = req.params;
     const media = await mediaFromTv(tmdbId, season, episode);
-    const result = await findFirstProvider(media);
-    if (!result) return res.status(404).json({ error: "no_output" });
+    const include =
+      typeof req.query.include === "string"
+        ? req.query.include.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const exclude =
+      typeof req.query.exclude === "string"
+        ? req.query.exclude.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const excluded = new Set(
+      [...ALWAYS_EXCLUDED_SOURCE_IDS]
+        .filter((id) => !include.includes(id))
+        .concat(exclude)
+    );
+
+    const debug = req.query.debug === "1" || req.query.debug === "true";
+    const result = debug
+      ? (await findFirstProviderDebug(media, excluded)).result
+      : await findFirstProvider(media, excluded);
+    if (!result) {
+      if (debug) {
+        const { attempts } = await findFirstProviderDebug(media, excluded);
+        return res.status(404).json({ error: "no_output", attempts });
+      }
+      return res.status(404).json({ error: "no_output" });
+    }
 
     if (media.imdbId) {
       try {
@@ -458,8 +627,31 @@ app.get("/tv/:tmdbId/season/:season/episode/:episode", async (req, res) => {
   try {
     const { tmdbId, season, episode } = req.params;
     const media = await mediaFromTv(tmdbId, season, episode);
-    const result = await findFirstProvider(media);
-    if (!result) return res.status(404).json({ error: "no_output" });
+    const include =
+      typeof req.query.include === "string"
+        ? req.query.include.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const exclude =
+      typeof req.query.exclude === "string"
+        ? req.query.exclude.split(",").map((s) => s.trim().toLowerCase())
+        : [];
+    const excluded = new Set(
+      [...ALWAYS_EXCLUDED_SOURCE_IDS]
+        .filter((id) => !include.includes(id))
+        .concat(exclude)
+    );
+
+    const debug = req.query.debug === "1" || req.query.debug === "true";
+    const result = debug
+      ? (await findFirstProviderDebug(media, excluded)).result
+      : await findFirstProvider(media, excluded);
+    if (!result) {
+      if (debug) {
+        const { attempts } = await findFirstProviderDebug(media, excluded);
+        return res.status(404).json({ error: "no_output", attempts });
+      }
+      return res.status(404).json({ error: "no_output" });
+    }
 
     if (media.imdbId) {
       try {
