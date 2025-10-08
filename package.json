@@ -13,8 +13,7 @@
     "express": "^4.19.2",
     "cors": "^2.8.5",
     "@p-stream/providers": "github:p-stream/providers#production",
-    "node-fetch": "^3.3.2",
-    "serverless-http": "^3.2.0"
+    "node-fetch": "^3.3.2"
   },
   "engines": {
     "node": ">=18"

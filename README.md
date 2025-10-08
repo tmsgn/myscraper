@@ -47,44 +47,8 @@ or TV:
 curl "http://localhost:3002/api/tv/1399/season/1/episode/1" | Out-Host
 ```
 
-## Deploy to Vercel
+## Deploy
 
-This repo is configured for Vercel serverless deployment using a single Express app behind API routes.
+You can deploy this app to any Node.js host that can run an Express server (e.g., Render, Railway, Fly.io, a VPS, or Docker). Ensure the required environment variable `TMDB_API_KEY` is set, and optionally `PROXY_URLS`.
 
-What’s included:
-
-- `vercel.json` routes everything to `api/index.js` (and catch-all `api/[...route].js`) so Express handles both `/` and `/api/*` paths.
-- Node.js runtime set to 20.x. No custom build needed.
-
-Required environment variables (set in Vercel Project Settings → Environment Variables):
-
-- `TMDB_API_KEY` (required)
-- `PROXY_URLS` (optional)
-
-### One-time via Vercel CLI
-
-```powershell
-# Optional: install CLI
-npm i -g vercel
-
-# Link and deploy (follow prompts)
-vercel
-
-# For production
-vercel --prod
-```
-
-### Via Vercel Dashboard
-
-1. Create a new project from this repository.
-2. Framework preset: “Other”.
-3. Set Environment Variables as above.
-4. Deploy. Endpoints will be available at:
-
-- GET https://<your-app>.vercel.app/api/movie/:tmdbId
-- GET https://<your-app>.vercel.app/api/tv/:tmdbId/season/:season/episode/:episode
-
-You can also call the non-prefixed aliases:
-
-- GET https://<your-app>.vercel.app/movie/:tmdbId
-- GET https://<your-app>.vercel.app/tv/:tmdbId/season/:season/episode/:episode
+Typical start command: `node server.js` (already wired to `pnpm start`).
