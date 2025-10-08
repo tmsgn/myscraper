@@ -328,7 +328,10 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
     try {
       const out = await providers.runSourceScraper({ id: src.id, media });
       if (out.stream && out.stream.length > 0) {
-        return { sourceId: src.id, stream: out.stream[0] };
+        const hlsOnly = out.stream.filter((st) => st && st.type === "hls");
+        if (hlsOnly.length > 0) {
+          return { sourceId: src.id, stream: hlsOnly[0] };
+        }
       }
       if (out.embeds && out.embeds.length > 0) {
         const orderedEmbeds = out.embeds
@@ -348,11 +351,16 @@ async function findFirstProvider(media, excluded = ALWAYS_EXCLUDED_SOURCE_IDS) {
               url: emb.url,
             });
             if (eout.stream && eout.stream.length > 0) {
-              return {
-                sourceId: src.id,
-                embedId: emb.embedId,
-                stream: eout.stream[0],
-              };
+              const hlsOnly = eout.stream.filter(
+                (st) => st && st.type === "hls"
+              );
+              if (hlsOnly.length > 0) {
+                return {
+                  sourceId: src.id,
+                  embedId: emb.embedId,
+                  stream: hlsOnly[0],
+                };
+              }
             }
           } catch (_) {
             // continue to next embed
